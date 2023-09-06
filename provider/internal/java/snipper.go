@@ -14,9 +14,6 @@ import (
 )
 
 const (
-	// TODO: make this configurable in the future
-	// We may or may not need to do this so holding off for now.
-	CONTEXT_LINES   = 10
 	FILE_URI_PREFIX = "konveyor-jdt"
 )
 
@@ -62,14 +59,19 @@ func (p *javaProvider) GetCodeSnip(u uri.URI, loc engine.Location) (string, erro
 			javaFileName = fmt.Sprintf("%v.java", javaFileName[0:i])
 		}
 
-		cmd := exec.Command("jar", "xf", filepath.Base(jarPath))
-		cmd.Dir = filepath.Dir(jarPath)
-		err := cmd.Run()
-		if err != nil {
-			fmt.Printf("\n java%v", err)
-			return "", err
+		javaFileAbsolutePath := filepath.Join(filepath.Dir(jarPath), filepath.Dir(path), javaFileName)
+
+		if _, err := os.Stat(javaFileAbsolutePath); err != nil {
+			cmd := exec.Command("jar", "xf", filepath.Base(jarPath))
+			cmd.Dir = filepath.Dir(jarPath)
+			err := cmd.Run()
+			if err != nil {
+				fmt.Printf("\n java%v", err)
+				return "", err
+			}
 		}
-		snip, err := p.scanFile(filepath.Join(filepath.Dir(jarPath), filepath.Dir(path), javaFileName), loc)
+
+		snip, err := p.scanFile(javaFileAbsolutePath, loc)
 		if err != nil {
 			fmt.Printf("\n%v", err)
 			return "", err
@@ -91,13 +93,13 @@ func (p *javaProvider) scanFile(path string, loc engine.Location) (string, error
 	scanner := bufio.NewScanner(readFile)
 	lineNumber := 0
 	codeSnip := ""
-	paddingSize := len(strconv.Itoa(loc.EndPosition.Line + CONTEXT_LINES))
+	paddingSize := len(strconv.Itoa(loc.EndPosition.Line + p.config.ContextLines))
 	for scanner.Scan() {
-		if (lineNumber - CONTEXT_LINES) == loc.EndPosition.Line {
+		if (lineNumber - p.config.ContextLines) == loc.EndPosition.Line {
 			codeSnip = codeSnip + fmt.Sprintf("%*d  %v", paddingSize, lineNumber+1, scanner.Text())
 			break
 		}
-		if (lineNumber + CONTEXT_LINES) >= loc.StartPosition.Line {
+		if (lineNumber + p.config.ContextLines) >= loc.StartPosition.Line {
 			codeSnip = codeSnip + fmt.Sprintf("%*d  %v\n", paddingSize, lineNumber+1, scanner.Text())
 		}
 		lineNumber += 1
