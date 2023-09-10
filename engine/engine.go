@@ -20,12 +20,6 @@ import (
 	"github.com/konveyor/analyzer-lsp/tracing"
 )
 
-const (
-	// TODO: make this configurable in the future
-	// We may or may not need to do this so holding off for now.
-	CONTEXT_LINES = 10
-)
-
 type RuleEngine interface {
 	RunRules(context context.Context, rules []RuleSet, selectors ...RuleSelector) []konveyor.RuleSet
 	Stop()
@@ -55,6 +49,7 @@ type ruleEngine struct {
 
 	incidentLimit int
 	codeSnipLimit int
+	contextLines  int
 }
 
 type Option func(engine *ruleEngine)
@@ -62,6 +57,12 @@ type Option func(engine *ruleEngine)
 func WithIncidentLimit(i int) Option {
 	return func(engine *ruleEngine) {
 		engine.incidentLimit = i
+	}
+}
+
+func WithContextLines(i int) Option {
+	return func(engine *ruleEngine) {
+		engine.contextLines = i
 	}
 }
 
@@ -173,7 +174,7 @@ func (r *ruleEngine) RunRules(ctx context.Context, ruleSets []RuleSet, selectors
 						if rs, ok := mapRuleSets[response.RuleSetName]; ok {
 							rs.Errors[response.Rule.RuleID] = response.Err.Error()
 						}
-					} else if response.ConditionResponse.Matched {
+					} else if response.ConditionResponse.Matched && len(response.ConditionResponse.Incidents) > 0 {
 						violation, err := r.createViolation(response.ConditionResponse, response.Rule)
 						if err != nil {
 							r.logger.Error(err, "unable to create violation from response")
@@ -405,15 +406,6 @@ func (r *ruleEngine) createViolation(conditionResponse ConditionResponse, rule R
 			lineNumber := *m.LineNumber
 			incident.LineNumber = &lineNumber
 		}
-		links := []konveyor.Link{}
-		if len(m.Links) > 0 {
-			for _, l := range m.Links {
-				links = append(links, konveyor.Link{
-					URL:   l.URL,
-					Title: l.Title,
-				})
-			}
-		}
 		// Some violations may not have a location in code.
 		limitSnip := (r.codeSnipLimit != 0 && fileCodeSnipCount[string(m.FileURI)] == r.codeSnipLimit)
 		if !limitSnip {
@@ -491,6 +483,8 @@ func (r *ruleEngine) createViolation(conditionResponse ConditionResponse, rule R
 		}
 	}
 
+	rule.Labels = deduplicateLabels(rule.Labels)
+
 	return konveyor.Violation{
 		Description: rule.Description,
 		Labels:      rule.Labels,
@@ -520,13 +514,13 @@ func (r *ruleEngine) getCodeLocation(m IncidentContext, rule Rule) (codeSnip str
 		scanner := bufio.NewScanner(readFile)
 		lineNumber := 0
 		codeSnip := ""
-		paddingSize := len(strconv.Itoa(m.CodeLocation.EndPosition.Line + CONTEXT_LINES))
+		paddingSize := len(strconv.Itoa(m.CodeLocation.EndPosition.Line + r.contextLines))
 		for scanner.Scan() {
-			if (lineNumber - CONTEXT_LINES) == m.CodeLocation.EndPosition.Line {
+			if (lineNumber - r.contextLines) == m.CodeLocation.EndPosition.Line {
 				codeSnip = codeSnip + fmt.Sprintf("%*d  %v", paddingSize, lineNumber+1, scanner.Text())
 				break
 			}
-			if (lineNumber + CONTEXT_LINES) >= m.CodeLocation.StartPosition.Line {
+			if (lineNumber + r.contextLines) >= m.CodeLocation.StartPosition.Line {
 				codeSnip = codeSnip + fmt.Sprintf("%*d  %v\n", paddingSize, lineNumber+1, scanner.Text())
 			}
 			lineNumber += 1
@@ -556,4 +550,19 @@ func matchesAllSelectors(m RuleMeta, selectors ...RuleSelector) bool {
 		}
 	}
 	return true
+}
+
+func deduplicateLabels(labels []string) []string {
+	present := map[string]bool{}
+	uniquelabels := []string{}
+
+	for _, label := range labels {
+		if !present[label] {
+			present[label] = true
+			uniquelabels = append(uniquelabels, label)
+		}
+	}
+
+	return uniquelabels
+
 }

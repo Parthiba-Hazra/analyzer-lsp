@@ -68,11 +68,12 @@ type Capability struct {
 }
 
 type Config struct {
-	Name       string       `yaml:"name,omitempty" json:"name,omitempty"`
-	BinaryPath string       `yaml:"binaryPath,omitempty" json:"binaryPath,omitempty"`
-	Address    string       `yaml:"address,omitempty" json:"address,omitempty"`
-	Proxy      *Proxy       `yaml:"proxyConfig,omitempty" json:"proxyConfig,omitempty"`
-	InitConfig []InitConfig `yaml:"initConfig,omitempty" json:"initConfig,omitempty"`
+	Name         string       `yaml:"name,omitempty" json:"name,omitempty"`
+	BinaryPath   string       `yaml:"binaryPath,omitempty" json:"binaryPath,omitempty"`
+	Address      string       `yaml:"address,omitempty" json:"address,omitempty"`
+	Proxy        *Proxy       `yaml:"proxyConfig,omitempty" json:"proxyConfig,omitempty"`
+	InitConfig   []InitConfig `yaml:"initConfig,omitempty" json:"initConfig,omitempty"`
+	ContextLines int
 }
 
 type Proxy httpproxy.Config
@@ -352,11 +353,11 @@ type ProviderCondition struct {
 	DepLabelSelector *labels.LabelSelector[*Dep]
 }
 
-func (p *ProviderCondition) Ignorable() bool {
+func (p ProviderCondition) Ignorable() bool {
 	return p.Ignore
 }
 
-func (p *ProviderCondition) Evaluate(ctx context.Context, log logr.Logger, condCtx engine.ConditionContext) (engine.ConditionResponse, error) {
+func (p ProviderCondition) Evaluate(ctx context.Context, log logr.Logger, condCtx engine.ConditionContext) (engine.ConditionResponse, error) {
 	_, span := tracing.StartNewSpan(
 		ctx, "provider-condition", attribute.Key("cap").String(p.Capability))
 	defer span.End()
@@ -431,6 +432,15 @@ func (p *ProviderCondition) Evaluate(ctx context.Context, log logr.Logger, condC
 		}
 		incidents = append(incidents, i)
 	}
+
+	// If there are no incidents, don't generate any violations
+	if len(incidents) == 0 && len(resp.Incidents)-len(incidents) > 0 {
+		log.V(5).Info("filtered out all incidents based on dep label selector", "filteredOutCount", len(resp.Incidents)-len(incidents))
+		return engine.ConditionResponse{
+			Matched: resp.Matched,
+		}, nil
+	}
+
 	cr := engine.ConditionResponse{
 		Matched:         resp.Matched,
 		TemplateContext: resp.TemplateContext,
@@ -438,6 +448,9 @@ func (p *ProviderCondition) Evaluate(ctx context.Context, log logr.Logger, condC
 	}
 
 	log.V(8).Info("condition response", "ruleID", p.Rule.RuleID, "response", cr, "cap", p.Capability, "conditionInfo", p.ConditionInfo, "client", p.Client)
+	if len(resp.Incidents)-len(incidents) > 0 {
+		log.V(5).Info("filtered out incidents based on dep label selector", "filteredOutCount", len(resp.Incidents)-len(incidents))
+	}
 	return cr, nil
 
 }
