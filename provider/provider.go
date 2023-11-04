@@ -197,12 +197,13 @@ type ProviderEvaluateResponse struct {
 }
 
 type IncidentContext struct {
-	FileURI      uri.URI                `yaml:"fileURI"`
-	Effort       *int                   `yaml:"effort,omitempty"`
-	LineNumber   *int                   `yaml:"lineNumber,omitempty"`
-	Variables    map[string]interface{} `yaml:"variables,omitempty"`
-	Links        []ExternalLinks        `yaml:"externalLink,omitempty"`
-	CodeLocation *Location              `yaml:"location,omitempty"`
+	FileURI              uri.URI                `yaml:"fileURI"`
+	Effort               *int                   `yaml:"effort,omitempty"`
+	LineNumber           *int                   `yaml:"lineNumber,omitempty"`
+	Variables            map[string]interface{} `yaml:"variables,omitempty"`
+	Links                []ExternalLinks        `yaml:"externalLink,omitempty"`
+	CodeLocation         *Location              `yaml:"location,omitempty"`
+	IsDependencyIncident bool
 }
 
 type Location struct {
@@ -471,7 +472,7 @@ func (p ProviderCondition) Evaluate(ctx context.Context, log logr.Logger, condCt
 // matchDepLabelSelector evaluates the dep label selector on incident
 func matchDepLabelSelector(s *labels.LabelSelector[*Dep], inc IncidentContext, deps map[uri.URI][]*konveyor.Dep) (bool, error) {
 	// always match non dependency URIs or when there are no deps or no dep selector
-	if s == nil || deps == nil || len(deps) == 0 || inc.FileURI == "" {
+	if !inc.IsDependencyIncident || s == nil || deps == nil || len(deps) == 0 || inc.FileURI == "" {
 		return true, nil
 	}
 	matched := false
@@ -524,8 +525,6 @@ type DependencyCondition struct {
 	NameRegex string
 
 	Client Client
-
-	LabelSelector *labels.LabelSelector[*Dep]
 }
 
 func (dc DependencyCondition) Evaluate(ctx context.Context, log logr.Logger, condCtx engine.ConditionContext) (engine.ConditionResponse, error) {
@@ -548,16 +547,6 @@ func (dc DependencyCondition) Evaluate(ctx context.Context, log logr.Logger, con
 	matchedDeps := []matchedDep{}
 	for u, ds := range deps {
 		for _, dep := range ds {
-			if dc.LabelSelector != nil {
-				got, err := dc.LabelSelector.Matches(dep)
-				if err != nil {
-					return resp, err
-				}
-				if !got {
-					continue
-				}
-			}
-
 			if dep.Name == dc.Name {
 				matchedDeps = append(matchedDeps, matchedDep{dep: dep, uri: u})
 				break
@@ -689,11 +678,16 @@ func deduplicateDependencies(dependencies map[uri.URI][]*Dep) map[uri.URI][]*Dep
 			if depSeen[id+"direct"] != nil {
 				// We've already seen it and it's direct, nothing to do
 				continue
-			} else if depSeen[id+"indirect"] != nil && !dep.Indirect {
-				// We've seen it as an indirect, need to update the dep in
-				// the list to reflect that it's actually a direct dependency
-				deduped[uri][*depSeen[id+"indirect"]].Indirect = false
-				depSeen[id+"direct"] = depSeen[id+"indirect"]
+			} else if depSeen[id+"indirect"] != nil {
+				if !dep.Indirect {
+					// We've seen it as an indirect, need to update the dep in
+					// the list to reflect that it's actually a direct dependency
+					deduped[uri][*depSeen[id+"indirect"]].Indirect = false
+					depSeen[id+"direct"] = depSeen[id+"indirect"]
+				} else {
+					// Otherwise, we've just already seen it
+					continue
+				}
 			} else {
 				// We haven't seen this before and need to update the dedup
 				// list and mark that we've seen it

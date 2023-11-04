@@ -14,10 +14,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/antchfx/xmlquery"
 	"github.com/konveyor/analyzer-lsp/engine/labels"
 	"github.com/konveyor/analyzer-lsp/output/v1/konveyor"
 	"github.com/konveyor/analyzer-lsp/provider"
+	"github.com/vifraa/gopom"
 	"go.lsp.dev/uri"
 )
 
@@ -57,12 +57,12 @@ func (p *javaServiceClient) GetDependencies(ctx context.Context) (map[uri.URI][]
 	} else {
 		ll, err = p.GetDependenciesDAG(ctx)
 		if err != nil {
-			p.log.Info("unable to get dependencies using fallback", "error", err)
-			return p.GetDependencyFallback(ctx)
+			p.log.Info("unable to get dependencies, using fallback", "error", err)
+			return p.GetDependenciesFallback(ctx, "")
 		}
 		if len(ll) == 0 {
-			p.log.Info("unable to get dependencies non found  using fallback")
-			return p.GetDependencyFallback(ctx)
+			p.log.Info("unable to get dependencies (none found), using fallback")
+			return p.GetDependenciesFallback(ctx, "")
 		}
 	}
 	for f, ds := range ll {
@@ -97,52 +97,78 @@ func getMavenLocalRepoPath(mvnSettingsFile string) string {
 	return string(outb.String())
 }
 
-func (p *javaServiceClient) GetDependencyFallback(ctx context.Context) (map[uri.URI][]*provider.Dep, error) {
-	pomDependencyQuery := "//dependencies/dependency/*"
-	path := p.findPom()
-	file := uri.File(path)
-
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
-	}
-
-	f, err := os.Open(absPath)
-	if err != nil {
-		return nil, err
-	}
-	doc, err := xmlquery.Parse(f)
-	if err != nil {
-		return nil, err
-	}
-	list, err := xmlquery.QueryAll(doc, pomDependencyQuery)
-	if err != nil {
-		return nil, err
-	}
+func (p *javaServiceClient) GetDependenciesFallback(ctx context.Context, location string) (map[uri.URI][]*provider.Dep, error) {
 	deps := []*provider.Dep{}
-	dep := &provider.Dep{}
-	// TODO this is comedically janky
-	for _, node := range list {
-		if node.Data == "groupId" {
-			if dep.Name != "" {
-				deps = append(deps, dep)
-				dep = &provider.Dep{}
-			}
-			dep.Name = node.InnerText()
-		} else if node.Data == "artifactId" {
-			dep.Name += "." + node.InnerText()
-		} else if node.Data == "version" {
-			dep.Version = node.InnerText()
+
+	path, err := filepath.Abs(p.findPom())
+	if err != nil {
+		return nil, err
+	}
+
+	if location != "" {
+		path = location
+	}
+	pom, err := gopom.Parse(path)
+	if err != nil {
+		return nil, err
+	}
+	// If the pom object is empty then parse failed silently.
+	if reflect.DeepEqual(*pom, gopom.Project{}) {
+		return nil, nil
+	}
+
+	// have to get both <dependencies> and <dependencyManagement> dependencies (if present)
+	var pomDeps []gopom.Dependency
+	if pom.Dependencies != nil {
+		pomDeps = append(pomDeps, *pom.Dependencies...)
+	}
+	if pom.DependencyManagement != nil {
+		if pom.DependencyManagement.Dependencies != nil {
+			pomDeps = append(pomDeps, *pom.DependencyManagement.Dependencies...)
 		}
-		// Ignore the others
 	}
-	if !reflect.DeepEqual(dep, provider.Dep{}) {
-		dep.Labels = []string{fmt.Sprintf("%v=%v", provider.DepSourceLabel, javaDepSourceInternal)}
-		deps = append(deps, dep)
+
+	// add each dependency found
+	for _, d := range pomDeps {
+		if d.GroupID == nil || d.Version == nil || d.ArtifactID == nil {
+			continue
+		}
+		dep := provider.Dep{}
+		dep.Name = fmt.Sprintf("%s.%s", *d.GroupID, *d.ArtifactID)
+		if *d.Version != "" {
+			if strings.Contains(*d.Version, "$") {
+				version := strings.TrimSuffix(strings.TrimPrefix(*d.Version, "${"), "}")
+				version = pom.Properties.Entries[version]
+				if version != "" {
+					dep.Version = version
+				}
+			} else {
+				dep.Version = *d.Version
+			}
+		}
+		deps = append(deps, &dep)
 	}
+
 	m := map[uri.URI][]*provider.Dep{}
-	m[file] = deps
+	m[uri.File(path)] = deps
 	p.depsCache = m
+
+	// recursively find deps in submodules
+	if pom.Modules != nil {
+		for _, mod := range *pom.Modules {
+			mPath := fmt.Sprintf("%s/%s/pom.xml", filepath.Dir(path), mod)
+			moreDeps, err := p.GetDependenciesFallback(ctx, mPath)
+			if err != nil {
+				return nil, err
+			}
+
+			// add found dependencies to map
+			for depPath := range moreDeps {
+				m[depPath] = moreDeps[depPath]
+			}
+		}
+	}
+
 	return m, nil
 }
 
@@ -152,46 +178,35 @@ func (p *javaServiceClient) GetDependenciesDAG(ctx context.Context) (map[uri.URI
 	path := p.findPom()
 	file := uri.File(path)
 
-	//Create temp file to use
-	f, err := os.CreateTemp("", "*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(f.Name())
-
 	moddir := filepath.Dir(path)
+
 	args := []string{
 		"dependency:tree",
 		"-Djava.net.useSystemProxies=true",
-		fmt.Sprintf("-DoutputFile=%s", f.Name()),
 	}
+
 	if p.mvnSettingsFile != "" {
 		args = append(args, "-s", p.mvnSettingsFile)
 	}
+
 	// get the graph output
 	cmd := exec.Command("mvn", args...)
 	cmd.Dir = moddir
-	err = cmd.Run()
+	mvnOutput, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, err
 	}
 
-	b, err := os.ReadFile(f.Name())
-	if err != nil {
-		return nil, err
-	}
+	lines := strings.Split(string(mvnOutput), "\n")
+	submoduleTrees := extractSubmoduleTrees(lines)
 
-	lines := strings.Split(string(b), "\n")
-
-	// strip first and last line of the output
-	// first line is the base package, last line empty
-	if len(lines) > 2 {
-		lines = lines[1 : len(lines)-1]
-	}
-
-	pomDeps, err := p.parseMavenDepLines(lines, localRepoPath)
-	if err != nil {
-		return nil, err
+	var pomDeps []provider.DepDAGItem
+	for _, tree := range submoduleTrees {
+		submoduleDeps, err := p.parseMavenDepLines(tree, localRepoPath)
+		if err != nil {
+			return nil, err
+		}
+		pomDeps = append(pomDeps, submoduleDeps...)
 	}
 
 	m := map[uri.URI][]provider.DepDAGItem{}
@@ -205,6 +220,41 @@ func (p *javaServiceClient) GetDependenciesDAG(ctx context.Context) (map[uri.URI
 	return m, nil
 }
 
+// extractSubmoduleTrees creates an array of lines for each submodule tree found in the mvn dependency:tree output
+func extractSubmoduleTrees(lines []string) [][]string {
+	submoduleTrees := [][]string{}
+
+	beginRegex := regexp.MustCompile(`(maven-)*dependency(-plugin)*:[\d\.]+:tree`)
+	endRegex := regexp.MustCompile(`\[INFO\] -*$`)
+
+	submod := 0
+	gather, skipmod := false, true
+	for _, line := range lines {
+		if beginRegex.Find([]byte(line)) != nil {
+			gather = true
+			submoduleTrees = append(submoduleTrees, []string{})
+			continue
+		}
+
+		if gather {
+			if endRegex.Find([]byte(line)) != nil {
+				gather, skipmod = false, true
+				submod++
+				continue
+			}
+			if skipmod { // we ignore the first module (base module)
+				skipmod = false
+				continue
+			}
+
+			line = strings.TrimLeft(line, "[INFO] ")
+			submoduleTrees[submod] = append(submoduleTrees[submod], line)
+		}
+	}
+
+	return submoduleTrees
+}
+
 // discoverDepsFromJars walks given path to discover dependencies embedded as JARs
 func (p *javaServiceClient) discoverDepsFromJars(path string, ll map[uri.URI][]konveyor.DepDAGItem) {
 	// for binaries we only find JARs embedded in archive
@@ -212,6 +262,7 @@ func (p *javaServiceClient) discoverDepsFromJars(path string, ll map[uri.URI][]k
 		deps:        ll,
 		depToLabels: p.depToLabels,
 		m2RepoPath:  getMavenLocalRepoPath(p.mvnSettingsFile),
+		seen:        map[string]bool{},
 	}
 	filepath.WalkDir(path, w.walkDirForJar)
 }
@@ -220,6 +271,7 @@ type walker struct {
 	deps        map[uri.URI][]provider.DepDAGItem
 	depToLabels map[string]*depLabelItem
 	m2RepoPath  string
+	seen        map[string]bool
 }
 
 func (w *walker) walkDirForJar(path string, info fs.DirEntry, err error) error {
@@ -230,6 +282,11 @@ func (w *walker) walkDirForJar(path string, info fs.DirEntry, err error) error {
 		return filepath.WalkDir(filepath.Join(path, info.Name()), w.walkDirForJar)
 	}
 	if strings.HasSuffix(info.Name(), ".jar") {
+		seenKey := filepath.Base(info.Name())
+		if _, ok := w.seen[seenKey]; ok {
+			return nil
+		}
+		w.seen[seenKey] = true
 		d := provider.Dep{
 			Name: info.Name(),
 		}
