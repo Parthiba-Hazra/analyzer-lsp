@@ -45,6 +45,10 @@ var capabilities = []provider.Capability{
 		TemplateContext: openapi3.SchemaRef{},
 	},
 	{
+		Name:            "yaml",
+		TemplateContext: openapi3.SchemaRef{},
+	},
+	{
 		Name:            "hasTags",
 		TemplateContext: openapi3.SchemaRef{},
 	},
@@ -55,6 +59,7 @@ type builtinCondition struct {
 	File                     fileCondition        `yaml:"file"`
 	XML                      xmlCondition         `yaml:"xml"`
 	JSON                     jsonCondition        `yaml:"json"`
+	YAML                     yamlCondition        `yaml:"yaml"` // Add the YAML condition struct
 	HasTags                  []string             `yaml:"hasTags"`
 	provider.ProviderContext `yaml:",inline"`
 }
@@ -62,6 +67,11 @@ type builtinCondition struct {
 type fileContentCondition struct {
 	FilePattern string `yaml:"filePattern"`
 	Pattern     string `yaml:"pattern`
+}
+
+type yamlCondition struct {
+	Key   string `yaml:"key"`
+	Value string `yaml:"value"`
 }
 
 type fileCondition struct {

@@ -15,6 +15,7 @@ import (
 	"github.com/antchfx/xmlquery"
 	"github.com/antchfx/xpath"
 	"github.com/konveyor/analyzer-lsp/provider"
+	"github.com/yalp/jsonpath"
 	"go.lsp.dev/uri"
 	"gopkg.in/yaml.v2"
 )
@@ -235,6 +236,115 @@ func (p *builtinServiceClient) Evaluate(ctx context.Context, cap string, conditi
 			}
 		}
 		return response, nil
+
+		// case "yaml":
+		// 	c := cond.YAML
+		// 	if c.Key == "" || c.Value == "" {
+		// 		return response, fmt.Errorf("key and value must be provided for YAML condition")
+		// 	}
+
+		// 	matchingYAMLFiles, err := findFilesMatchingPattern(p.config.Location, "*.yaml")
+		// 	if err != nil {
+		// 		return response, fmt.Errorf("unable to find YAML files: %v", err)
+		// 	}
+
+		// 	for _, file := range matchingYAMLFiles {
+		// 		data, err := os.ReadFile(file)
+		// 		if err != nil {
+		// 			fmt.Printf("unable to read YAML file '%s': %v\n", file, err)
+		// 			continue
+		// 		}
+
+		// 		var yamlData map[string]interface{}
+		// 		if err := yaml.Unmarshal(data, &yamlData); err != nil {
+		// 			fmt.Printf("unable to unmarshal YAML data in file '%s': %v\n", file, err)
+		// 			continue
+		// 		}
+
+		// 		if value, ok := yamlData[c.Key]; ok {
+		// 			if value == c.Value {
+		// 				ab, err := filepath.Abs(file)
+		// 				if err != nil {
+		// 					fmt.Printf("\n%v\n\n", err)
+		// 					ab = file
+		// 				}
+		// 				response.Matched = true
+		// 				response.Incidents = append(response.Incidents, provider.IncidentContext{
+		// 					FileURI: uri.File(ab),
+		// 					Variables: map[string]interface{}{
+		// 						"matchingKey":   c.Key,
+		// 						"matchingValue": c.Value,
+		// 					},
+		// 				})
+		// 			}
+		// 		}
+		// 	}
+		// 	return response, nil
+
+	case "yaml":
+		c := cond.YAML
+		if c.Key == "" {
+			return response, fmt.Errorf("Key must be provided for YAML condition")
+		}
+
+		matchingYAMLFiles, err := findFilesMatchingPattern(p.config.Location, "*.yaml")
+		if err != nil {
+			return response, fmt.Errorf("unable to find YAML files: %v", err)
+		}
+		matchingYMLFiles, err := findFilesMatchingPattern(p.config.Location, "*.yml")
+		if err != nil {
+			return response, fmt.Errorf("unable to find YML files: %v", err)
+		}
+		matchingYAMLFiles = append(matchingYAMLFiles, matchingYMLFiles...)
+
+		for _, file := range matchingYAMLFiles {
+			yamlData, err := os.ReadFile(file)
+			if err != nil {
+				fmt.Printf("unable to read YAML file '%s': %v\n", file, err)
+				continue
+			}
+
+			yamlDocuments := strings.Split(string(yamlData), "---")
+
+			for _, yamlDoc := range yamlDocuments {
+				// Skip empty documents
+				yamlDoc = strings.TrimSpace(yamlDoc)
+				if yamlDoc == "" {
+					continue
+				}
+
+				var jsonData map[string]interface{}
+				if err := yaml.Unmarshal([]byte(yamlDoc), &jsonData); err != nil {
+					fmt.Printf("unable to parse YAML for file '%s': %v\n", file, err)
+					continue
+				} else {
+					result, err := jsonpath.Read(jsonData, c.Key)
+					if err != nil {
+						fmt.Printf("error searching for key '%s' in file '%s': %v\n", c.Key, file, err)
+						continue
+					}
+
+					// value := fmt.Sprintf("%v", result)
+					if result == c.Value {
+						ab, err := filepath.Abs(file)
+						if err != nil {
+							fmt.Printf("\n%v\n\n", err)
+							ab = file
+						}
+						response.Matched = true
+						response.Incidents = append(response.Incidents, provider.IncidentContext{
+							FileURI: uri.File(ab),
+							Variables: map[string]interface{}{
+								"matchedKey":   c.Key,
+								"matchedValue": c.Value,
+							},
+						})
+					}
+				}
+			}
+		}
+		return response, nil
+
 	case "hasTags":
 		found := true
 		for _, tag := range cond.HasTags {
@@ -284,3 +394,57 @@ func findFilesMatchingPattern(root, pattern string) ([]string, error) {
 	})
 	return matches, err
 }
+
+// // Function to convert YAML to JSON
+// func yamlToJSON(yamlData []byte) ([]byte, error) {
+// 	var jsonData interface{}
+// 	if err := yaml.Unmarshal(yamlData, &jsonData); err != nil {
+// 		return nil, err
+// 	}
+// 	jsonBytes, err := json.Marshal(jsonData)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return jsonBytes, nil
+// }
+
+// // Function to find key-value pairs using JSONPath
+// func findKeyValue(jsonData []byte, key, value string) bool {
+// 	expression := fmt.Sprintf("$..%s", key)
+
+// 	// Convert JSON data to a map
+// 	var data map[string]interface{}
+// 	if err := json.Unmarshal(jsonData, &data); err != nil {
+// 		fmt.Printf("unable to unmarshal JSON data: %v\n", err)
+// 		return false
+// 	}
+
+// 	jsonPathContext := jsonpath.New("key-search")
+// 	if err := jsonPathContext.Parse(expression); err != nil {
+// 		fmt.Printf("unable to parse JSONPath expression: %v\n", err)
+// 		return false
+// 	}
+
+// 	// Apply JSONPath expression
+// 	results, err := jsonPathContext.FindResults(data)
+// 	if err != nil {
+// 		fmt.Printf("unable to apply JSONPath expression: %v\n", err)
+// 		return false
+// 	}
+
+// 	for _, result := range results {
+// 		if result.IsList() {
+// 			for _, item := range result.List() {
+// 				if item.String() == value {
+// 					return true
+// 				}
+// 			}
+// 		} else {
+// 			if result.String() == value {
+// 				return true
+// 			}
+// 		}
+// 	}
+
+// 	return false
+// }

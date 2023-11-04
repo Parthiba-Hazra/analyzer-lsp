@@ -65,6 +65,8 @@ func init() {
 }
 
 func main() {
+	rulesFile = []string{"/home/parthiba/Documents/project/analyzer-lsp/try-rule.yaml"}
+	settingsFile = "/home/parthiba/Documents/project/analyzer-lsp/provider_container_settings.json"
 	if err := rootCmd.Execute(); err != nil {
 		println(err.Error())
 	} else if rootCmd.Flags().Changed("help") {
@@ -161,6 +163,7 @@ func main() {
 		}
 		providers[config.Name] = prov
 		if s, ok := prov.(provider.Startable); ok {
+			fmt.Printf("It's starting - %v\n", s)
 			if err := s.Start(ctx); err != nil {
 				log.Error(err, "unable to create provider client")
 				os.Exit(1)
@@ -178,6 +181,8 @@ func main() {
 	needProviders := map[string]provider.InternalProviderClient{}
 	for _, f := range rulesFile {
 		internRuleSet, internNeedProviders, err := parser.LoadRules(f)
+		fmt.Printf("internRuleSet- %v\n", internRuleSet)
+		fmt.Printf("internNeedProviders- %v\n", internNeedProviders)
 		if err != nil {
 			log.WithValues("fileName", f).Error(err, "unable to parse all the rules for ruleset")
 		}

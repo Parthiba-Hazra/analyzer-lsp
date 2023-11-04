@@ -114,6 +114,7 @@ func (c *Conn) Call(ctx context.Context, method string, params, result interface
 		Method: method,
 		Params: jsonParams,
 	}
+
 	// marshal the request now it is complete
 	data, err := json.Marshal(request)
 	if err != nil {
@@ -150,6 +151,7 @@ func (c *Conn) Call(ctx context.Context, method string, params, result interface
 	// now wait for the response
 	select {
 	case response := <-rchan:
+		fmt.Printf("here its working - %v\n", response)
 		for _, h := range c.handlers {
 			ctx = h.Response(ctx, c, Receive, response)
 		}

@@ -158,6 +158,7 @@ func (g *grpcProvider) Start(ctx context.Context) error {
 			select {
 			default:
 				caps := g.Capabilities()
+				fmt.Print("HERE ITS WORKING\n")
 				if len(caps) != 0 {
 					return nil
 				}

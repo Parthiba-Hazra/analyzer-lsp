@@ -37,6 +37,7 @@ require (
 	github.com/mailru/easyjson v0.0.0-20190626092158-b2ccc519800e // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/shopspring/decimal v1.3.1 // indirect
+	github.com/yalp/jsonpath v0.0.0-20180802001716-5cc68e5049a0
 	go.opentelemetry.io/otel v1.11.2
 	go.opentelemetry.io/otel/exporters/jaeger v1.11.2
 	go.opentelemetry.io/otel/sdk v1.11.2

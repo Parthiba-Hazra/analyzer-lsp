@@ -1,0 +1,37 @@
+{
+    "type": "object",
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "apiVersion": {
+              "type": "string",
+              "enum": ["extensions/v1beta1"]
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["Deployment"]
+            }
+          },
+          "required": ["apiVersion", "kind"],
+          "additionalProperties": false
+        },
+        "then": {
+          "not": {
+            "properties": {
+              "apiVersion": {
+                "type": "string",
+                "enum": ["extensions/v1beta1"]
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["Deployment"]
+              }
+            },
+            "required": ["apiVersion", "kind"],
+            "additionalProperties": false
+          }
+        }
+      }
+    ]
+  }

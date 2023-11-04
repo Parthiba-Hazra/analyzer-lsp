@@ -1,0 +1,20 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "apiVersion": {
+        "type": "string",
+        "not": {
+          "const": "extensions/v1beta1"
+        }
+      },
+      "kind": {
+        "type": "string",
+        "not": {
+          "const": "Deployment"
+        }
+      }
+    },
+    "required": ["apiVersion", "kind"],
+    "additionalProperties": true
+  }

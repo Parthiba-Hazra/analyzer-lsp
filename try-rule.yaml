@@ -1,0 +1,6 @@
+- message: 'java found apiextensions/v1/customresourcedefinitions found {{file}}:{{lineNumber}}'
+  ruleID: lang-ref-003
+  when:
+    java.referenced:
+      pattern: "*apiextensions.v1beta1.CustomResourceDefinition*"
+      location: TYPE
