@@ -184,7 +184,7 @@
   ruleID: filecontent-codesnip-test
   when:
     builtin.filecontent:
-      pattern: "^FROM.*openjdk-11.*"
+      pattern: "^.*openjdk-11.*"
       filePattern: "Dockerfile"
 
 - message: python sample rule 001
@@ -200,6 +200,7 @@
 - message: python sample rule 003
   ruleID: python-sample-rule-003
   when:
+<<<<<<< HEAD
     python.referenced:
       pattern: "create_custom_resource_definition"
 - message: Deprecated Kubernetes API version 'apps/v1beta1' is used for 'StatefulSet'. Consider using 'apps/v1'.
@@ -232,3 +233,7 @@
         kind: "StatefulSet"
         deprecatedIn: "v1.9.0"
         removedIn: "v1.16.0"
+=======
+    python.referenced: 
+      pattern: "create_custom_resource_definition"
+>>>>>>> 23e8c21726d7ef37f3208ef0649cb4576de545db

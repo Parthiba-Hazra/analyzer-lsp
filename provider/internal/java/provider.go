@@ -12,13 +12,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-logr/logr"
+	"github.com/konveyor/analyzer-lsp/engine"
 	"github.com/konveyor/analyzer-lsp/jsonrpc2"
 	"github.com/konveyor/analyzer-lsp/lsp/protocol"
+	"github.com/konveyor/analyzer-lsp/output/v1/konveyor"
 	"github.com/konveyor/analyzer-lsp/provider"
-	"github.com/vifraa/gopom"
 	"go.lsp.dev/uri"
 )
 
@@ -62,10 +64,14 @@ type javaProvider struct {
 
 	clients []provider.ServiceClient
 
-	hasMaven bool
+	hasMaven          bool
+	depsMutex         sync.RWMutex
+	depsLocationCache map[string]int
 }
 
 var _ provider.InternalProviderClient = &javaProvider{}
+
+var _ provider.DependencyLocationResolver = &javaProvider{}
 
 type javaCondition struct {
 	Referenced referenceCondition `yaml:"referenced"`
@@ -81,10 +87,11 @@ func NewJavaProvider(config provider.Config, log logr.Logger) *javaProvider {
 	_, mvnBinaryError := exec.LookPath("mvn")
 
 	return &javaProvider{
-		config:   config,
-		hasMaven: mvnBinaryError == nil,
-		Log:      log,
-		clients:  []provider.ServiceClient{},
+		config:            config,
+		hasMaven:          mvnBinaryError == nil,
+		Log:               log,
+		clients:           []provider.ServiceClient{},
+		depsLocationCache: make(map[string]int),
 	}
 }
 
@@ -185,11 +192,11 @@ func (p *javaProvider) ProviderInit(ctx context.Context) error {
 }
 
 func (p *javaProvider) Init(ctx context.Context, log logr.Logger, config provider.InitConfig) (provider.ServiceClient, error) {
-	//By default if nothing is set for analysis mode, in the config, we should default to full for external providers
-	var a provider.AnalysisMode = provider.AnalysisMode(config.AnalysisMode)
-	if a == provider.AnalysisMode("") {
-		a = provider.FullAnalysisMode
-	} else if !(a == provider.FullAnalysisMode || a == provider.SourceOnlyAnalysisMode) {
+	// By default, if nothing is set for analysis mode in the config, we should default to full for external providers
+	var mode provider.AnalysisMode = provider.AnalysisMode(config.AnalysisMode)
+	if mode == provider.AnalysisMode("") {
+		mode = provider.FullAnalysisMode
+	} else if !(mode == provider.FullAnalysisMode || mode == provider.SourceOnlyAnalysisMode) {
 		return nil, fmt.Errorf("invalid Analysis Mode")
 	}
 	log = log.WithValues("provider", "java")
@@ -234,12 +241,14 @@ func (p *javaProvider) Init(ctx context.Context, log logr.Logger, config provide
 		isBinary = true
 	}
 
-	// we attempt to decompile JARs of dependencies that don't have a sources JAR attached
-	// we need to do this for jdtls to correctly recognize source attachment for dep
-	err := resolveSourcesJars(ctx, log, config.Location, mavenSettingsFile)
-	if err != nil {
-		// TODO (pgaikwad): should we ignore this failure?
-		log.Error(err, "failed to resolve sources jar for location", "location", config.Location)
+	if mode == provider.FullAnalysisMode {
+		// we attempt to decompile JARs of dependencies that don't have a sources JAR attached
+		// we need to do this for jdtls to correctly recognize source attachment for dep
+		err := resolveSourcesJars(ctx, log, config.Location, mavenSettingsFile)
+		if err != nil {
+			// TODO (pgaikwad): should we ignore this failure?
+			log.Error(err, "failed to resolve sources jar for location", "location", config.Location)
+		}
 	}
 
 	// handle proxy settings
@@ -296,16 +305,17 @@ func (p *javaProvider) Init(ctx context.Context, log logr.Logger, config provide
 	}()
 
 	svcClient := javaServiceClient{
-		rpc:              rpc,
-		cancelFunc:       cancelFunc,
-		config:           config,
-		cmd:              cmd,
-		bundles:          bundles,
-		workspace:        workspace,
-		log:              log,
-		depToLabels:      map[string]*depLabelItem{},
-		isLocationBinary: isBinary,
-		mvnSettingsFile:  mavenSettingsFile,
+		rpc:               rpc,
+		cancelFunc:        cancelFunc,
+		config:            config,
+		cmd:               cmd,
+		bundles:           bundles,
+		workspace:         workspace,
+		log:               log,
+		depToLabels:       map[string]*depLabelItem{},
+		isLocationBinary:  isBinary,
+		mvnSettingsFile:   mavenSettingsFile,
+		depsLocationCache: make(map[string]int),
 	}
 
 	svcClient.initialization(ctx)
@@ -324,6 +334,69 @@ func (p *javaProvider) GetDependenciesDAG(ctx context.Context) (map[uri.URI][]pr
 	return provider.FullDepDAGResponse(ctx, p.clients)
 }
 
+// GetLocation given a dep, attempts to find line number, caches the line number for a given dep
+func (j *javaProvider) GetLocation(ctx context.Context, dep konveyor.Dep) (engine.Location, error) {
+	location := engine.Location{StartPosition: engine.Position{}, EndPosition: engine.Position{}}
+
+	cacheKey := fmt.Sprintf("%s-%s-%s-%v",
+		dep.Name, dep.Version, dep.ResolvedIdentifier, dep.Indirect)
+	j.depsMutex.RLock()
+	val, exists := j.depsLocationCache[cacheKey]
+	j.depsMutex.RUnlock()
+	if exists {
+		if val == -1 {
+			return location,
+				fmt.Errorf("unable to get location for dep %s due to a previous error", dep.Name)
+		}
+		return engine.Location{
+			StartPosition: engine.Position{
+				Line: val,
+			},
+			EndPosition: engine.Position{
+				Line: val,
+			},
+		}, nil
+	}
+
+	defer func() {
+		j.depsMutex.Lock()
+		j.depsLocationCache[cacheKey] = location.StartPosition.Line
+		j.depsMutex.Unlock()
+	}()
+
+	location.StartPosition.Line = -1
+	// we know that this provider populates extras with required information
+	if dep.Extras == nil {
+		return location, fmt.Errorf("unable to get location for dep %s, dep.Extras not set", dep.Name)
+	}
+	extrasKeys := []string{artifactIdKey, groupIdKey, pomPathKey}
+	for _, key := range extrasKeys {
+		if val, ok := dep.Extras[key]; !ok {
+			return location,
+				fmt.Errorf("unable to get location for dep %s, missing dep.Extras key %s", dep.Name, key)
+		} else if _, ok := val.(string); !ok {
+			return location,
+				fmt.Errorf("unable to get location for dep %s, dep.Extras key %s not a string", dep.Name, key)
+		}
+	}
+
+	groupId := dep.Extras[groupIdKey].(string)
+	artifactId := dep.Extras[artifactIdKey].(string)
+	path := dep.Extras[pomPathKey].(string)
+	if path == "" {
+		return location, fmt.Errorf("unable to get location for dep %s, empty pom path", dep.Name)
+	}
+	lineNumber, err := provider.MultilineGrep(ctx, 2, path,
+		fmt.Sprintf("(<groupId>%s</groupId>|<artifactId>%s</artifactId>).*?(<artifactId>%s</artifactId>|<groupId>%s</groupId>).*",
+			groupId, artifactId, artifactId, groupId))
+	if err != nil || lineNumber == -1 {
+		return location, fmt.Errorf("unable to get location for dep %s, search error - %w", dep.Name, err)
+	}
+	location.StartPosition.Line = lineNumber
+	location.EndPosition.Line = lineNumber
+	return location, nil
+}
+
 // resolveSourcesJars for a given source code location, runs maven to find
 // deps that don't have sources attached and decompiles them
 func resolveSourcesJars(ctx context.Context, log logr.Logger, location, mavenSettings string) error {
@@ -331,17 +404,12 @@ func resolveSourcesJars(ctx context.Context, log logr.Logger, location, mavenSet
 
 	log.V(5).Info("resolving dependency sources")
 
-	pomPath := fmt.Sprintf("%s/pom.xml", location)
-	pom, err := gopom.Parse(pomPath)
-	if err != nil {
-		return err
-	}
-
 	args := []string{
-		"dependency:sources",
+		"-B",
+		"de.qaware.maven:go-offline-maven-plugin:resolve-dependencies",
+		"-DdownloadSources",
 		"-Djava.net.useSystemProxies=true",
 	}
-
 	if mavenSettings != "" {
 		args = append(args, "-s", mavenSettings)
 	}
@@ -352,14 +420,13 @@ func resolveSourcesJars(ctx context.Context, log logr.Logger, location, mavenSet
 		return err
 	}
 
+	log.V(8).WithValues("output", mvnOutput).Info("got maven output")
+
 	reader := bytes.NewReader(mvnOutput)
 	artifacts, err := parseUnresolvedSources(reader)
 	if err != nil {
 		return err
 	}
-
-	// remove unresolved sources if they are an actual module in the project
-	artifacts = filterExistingSubmodules(artifacts, pom)
 
 	m2Repo := getMavenLocalRepoPath(mavenSettings)
 	if m2Repo == "" {
@@ -386,91 +453,85 @@ func resolveSourcesJars(ctx context.Context, log logr.Logger, location, mavenSet
 	// move decompiled files to base location of the jar
 	for _, decompileJob := range decompileJobs {
 		jarName := strings.TrimSuffix(filepath.Base(decompileJob.inputPath), ".jar")
-		moveFile(decompileJob.outputPath,
+		err = moveFile(decompileJob.outputPath,
 			filepath.Join(filepath.Dir(decompileJob.inputPath),
 				fmt.Sprintf("%s-sources.jar", jarName)))
+		if err != nil {
+			log.V(5).Error(err, "failed to move decompiled file", "file", decompileJob.outputPath)
+		}
 	}
 	return nil
 }
 
-// filterExistingSubmodules takes a list of artifacts and removes the ones existing in the given pom's modules list
-func filterExistingSubmodules(artifacts []javaArtifact, pom *gopom.Project) []javaArtifact {
-	if pom.Modules == nil {
-		return artifacts
-	}
-
-	var filtered []javaArtifact
-	for _, artifact := range artifacts {
-		found := false
-		for _, module := range *pom.Modules {
-			if artifact.ArtifactId == module {
-				found = true
-				break
-			}
-		}
-		if !found {
-			filtered = append(filtered, artifact)
-		}
-	}
-
-	return filtered
-}
-
+// parseUnresolvedSources takes the output from the go-offline maven plugin and returns the artifacts whose sources
+// could not be found.
 func parseUnresolvedSources(output io.Reader) ([]javaArtifact, error) {
-	artifacts := []javaArtifact{}
+	unresolvedSources := []javaArtifact{}
+	unresolvedArtifacts := []javaArtifact{}
+
 	scanner := bufio.NewScanner(output)
 
-	sourcesPluginSeparatorSeen := false
-	unresolvedSeparatorSeen := false
-	sourcesPluginRegex := regexp.MustCompile(`maven-dependency-plugin:[\d\.]+:sources`)
-	unresolvedRegex := regexp.MustCompile(`The following files have NOT been resolved`)
+	unresolvedRegex := regexp.MustCompile(`\[WARNING] The following artifacts could not be resolved`)
+	artifactRegex := regexp.MustCompile(`([\w\.]+):([\w\-]+):\w+:([\w\.]+):?([\w\.]+)?`)
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		line = strings.TrimLeft(line, "[INFO] ")
 
-		if sourcesPluginRegex.Find([]byte(line)) != nil {
-			sourcesPluginSeparatorSeen = true
-			unresolvedSeparatorSeen = false
-		} else if unresolvedRegex.Find([]byte(line)) != nil {
-			unresolvedSeparatorSeen = true
-		} else if sourcesPluginSeparatorSeen && unresolvedSeparatorSeen {
-			line, _, _ = strings.Cut(line, "--") // ie: "org.apache.derby:derby:jar:10.14.2.0:test -- module derby (auto)"
-
-			parts := strings.Split(line, ":")
-			if len(parts) != 6 && len(parts) != 5 {
-				continue
-			}
-
-			// sometimes maven puts here artifacts that are not sources; don't count those as unresolved (ie: spring-petclinic project)
-			if len(parts) == 6 {
-				classifier := parts[3]
-				if classifier != "sources" {
+		if unresolvedRegex.Find([]byte(line)) != nil {
+			gavs := artifactRegex.FindAllStringSubmatch(line, -1)
+			for _, gav := range gavs {
+				// dependency jar (not sources) also not found
+				if len(gav) == 5 && gav[3] != "sources" {
+					artifact := javaArtifact{
+						packaging:  JavaArchive,
+						GroupId:    gav[1],
+						ArtifactId: gav[2],
+						Version:    gav[3],
+					}
+					unresolvedArtifacts = append(unresolvedArtifacts, artifact)
 					continue
 				}
-			} else if len(parts) == 5 {
-				classifier := parts[2]
-				if classifier != "sources" {
-					continue
+
+				var v string
+				if len(gav) == 4 {
+					v = gav[3]
+				} else {
+					v = gav[4]
 				}
-			}
-
-			var version string
-			groupId := parts[0]
-			artifactId := parts[1]
-			if len(parts) == 6 {
-				version = parts[4]
-			} else {
-				version = parts[3]
-			}
-
-			artifacts = append(artifacts,
-				javaArtifact{
+				artifact := javaArtifact{
 					packaging:  JavaArchive,
-					ArtifactId: artifactId,
-					GroupId:    groupId,
-					Version:    version,
-				})
+					GroupId:    gav[1],
+					ArtifactId: gav[2],
+					Version:    v,
+				}
+
+				unresolvedSources = append(unresolvedSources, artifact)
+			}
 		}
 	}
-	return artifacts, scanner.Err()
+
+	// if we don't have the dependency itself available, we can't even decompile
+	result := []javaArtifact{}
+	for _, artifact := range unresolvedSources {
+		if contains(unresolvedArtifacts, artifact) || contains(result, artifact) {
+			continue
+		}
+		result = append(result, artifact)
+	}
+
+	return result, scanner.Err()
+}
+
+func contains(artifacts []javaArtifact, artifactToFind javaArtifact) bool {
+	if len(artifacts) == 0 {
+		return false
+	}
+
+	for _, artifact := range artifacts {
+		if artifact == artifactToFind {
+			return true
+		}
+	}
+
+	return false
 }

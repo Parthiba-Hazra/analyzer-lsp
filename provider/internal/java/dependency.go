@@ -28,6 +28,13 @@ const (
 	providerSpecificConfigExcludePackagesKey   = "excludePackages"
 )
 
+// keys used in dep.Extras for extra information about a dep
+const (
+	artifactIdKey = "artifactId"
+	groupIdKey    = "groupId"
+	pomPathKey    = "pomPath"
+)
+
 // TODO implement this for real
 func (p *javaServiceClient) findPom() string {
 	var depPath string
@@ -44,9 +51,13 @@ func (p *javaServiceClient) findPom() string {
 }
 
 func (p *javaServiceClient) GetDependencies(ctx context.Context) (map[uri.URI][]*provider.Dep, error) {
-	if p.depsCache != nil {
-		return p.depsCache, nil
+	p.depsMutex.RLock()
+	val := p.depsCache
+	p.depsMutex.RUnlock()
+	if val != nil {
+		return val, nil
 	}
+
 	var err error
 	var ll map[uri.URI][]konveyor.DepDAGItem
 	m := map[uri.URI][]*provider.Dep{}
@@ -74,7 +85,9 @@ func (p *javaServiceClient) GetDependencies(ctx context.Context) (map[uri.URI][]
 		}
 		m[f] = deps
 	}
+	p.depsMutex.Lock()
 	p.depsCache = m
+	p.depsMutex.Unlock()
 	return m, nil
 }
 
@@ -100,6 +113,8 @@ func getMavenLocalRepoPath(mvnSettingsFile string) string {
 func (p *javaServiceClient) GetDependenciesFallback(ctx context.Context, location string) (map[uri.URI][]*provider.Dep, error) {
 	deps := []*provider.Dep{}
 
+	m2Repo := getMavenLocalRepoPath(p.mvnSettingsFile)
+
 	path, err := filepath.Abs(p.findPom())
 	if err != nil {
 		return nil, err
@@ -109,6 +124,9 @@ func (p *javaServiceClient) GetDependenciesFallback(ctx context.Context, locatio
 		path = location
 	}
 	pom, err := gopom.Parse(path)
+	p.log.V(10).Info("Analyzing POM",
+		"POM", fmt.Sprintf("%s:%s:%s", pomCoordinate(pom.GroupID), pomCoordinate(pom.ArtifactID), pomCoordinate(pom.Version)),
+		"error", err)
 	if err != nil {
 		return nil, err
 	}
@@ -135,15 +153,35 @@ func (p *javaServiceClient) GetDependenciesFallback(ctx context.Context, locatio
 		}
 		dep := provider.Dep{}
 		dep.Name = fmt.Sprintf("%s.%s", *d.GroupID, *d.ArtifactID)
+		dep.Extras = map[string]interface{}{
+			groupIdKey:    *d.GroupID,
+			artifactIdKey: *d.ArtifactID,
+			pomPathKey:    path,
+		}
 		if *d.Version != "" {
 			if strings.Contains(*d.Version, "$") {
 				version := strings.TrimSuffix(strings.TrimPrefix(*d.Version, "${"), "}")
-				version = pom.Properties.Entries[version]
-				if version != "" {
+				p.log.V(10).Info("Searching for property in properties",
+					"property", version,
+					"properties", pom.Properties)
+				if pom.Properties == nil {
+					p.log.Info("Cannot resolve version property value as POM does not have properties",
+						"POM", fmt.Sprintf("%s.%s", pomCoordinate(pom.GroupID), pomCoordinate(pom.ArtifactID)),
+						"property", version,
+						"dependency", dep.Name)
 					dep.Version = version
+				} else {
+					version = pom.Properties.Entries[version]
+					if version != "" {
+						dep.Version = version
+					}
 				}
 			} else {
 				dep.Version = *d.Version
+			}
+			if m2Repo != "" && d.ArtifactID != nil && d.GroupID != nil {
+				dep.FileURIPrefix = filepath.Join(m2Repo,
+					strings.Replace(*d.GroupID, ".", "/", -1), *d.ArtifactID, dep.Version)
 			}
 		}
 		deps = append(deps, &dep)
@@ -151,7 +189,9 @@ func (p *javaServiceClient) GetDependenciesFallback(ctx context.Context, locatio
 
 	m := map[uri.URI][]*provider.Dep{}
 	m[uri.File(path)] = deps
+	p.depsMutex.Lock()
 	p.depsCache = m
+	p.depsMutex.Unlock()
 
 	// recursively find deps in submodules
 	if pom.Modules != nil {
@@ -172,6 +212,13 @@ func (p *javaServiceClient) GetDependenciesFallback(ctx context.Context, locatio
 	return m, nil
 }
 
+func pomCoordinate(value *string) string {
+	if value != nil {
+		return *value
+	}
+	return "unknown"
+}
+
 func (p *javaServiceClient) GetDependenciesDAG(ctx context.Context) (map[uri.URI][]provider.DepDAGItem, error) {
 	localRepoPath := getMavenLocalRepoPath(p.mvnSettingsFile)
 
@@ -181,6 +228,7 @@ func (p *javaServiceClient) GetDependenciesDAG(ctx context.Context) (map[uri.URI
 	moddir := filepath.Dir(path)
 
 	args := []string{
+		"-B",
 		"dependency:tree",
 		"-Djava.net.useSystemProxies=true",
 	}
@@ -202,7 +250,7 @@ func (p *javaServiceClient) GetDependenciesDAG(ctx context.Context) (map[uri.URI
 
 	var pomDeps []provider.DepDAGItem
 	for _, tree := range submoduleTrees {
-		submoduleDeps, err := p.parseMavenDepLines(tree, localRepoPath)
+		submoduleDeps, err := p.parseMavenDepLines(tree, localRepoPath, path)
 		if err != nil {
 			return nil, err
 		}
@@ -247,7 +295,14 @@ func extractSubmoduleTrees(lines []string) [][]string {
 				continue
 			}
 
-			line = strings.TrimLeft(line, "[INFO] ")
+			line = strings.TrimPrefix(line, "[INFO] ")
+			line = strings.Trim(line, " ")
+
+			// output contains progress report lines that are not deps, skip those
+			if !(strings.HasPrefix(line, "+") || strings.HasPrefix(line, "|") || strings.HasPrefix(line, "\\")) {
+				continue
+			}
+
 			submoduleTrees[submod] = append(submoduleTrees[submod], line)
 		}
 	}
@@ -314,8 +369,7 @@ func (w *walker) walkDirForJar(path string, info fs.DirEntry, err error) error {
 }
 
 // parseDepString parses a java dependency string
-// assumes format <group>:<name>:<type>:<version>:<scope>
-func (p *javaServiceClient) parseDepString(dep, localRepoPath string) (provider.Dep, error) {
+func (p *javaServiceClient) parseDepString(dep, localRepoPath, pomPath string) (provider.Dep, error) {
 	d := provider.Dep{}
 	// remove all the pretty print characters.
 	dep = strings.TrimFunc(dep, func(r rune) bool {
@@ -328,14 +382,30 @@ func (p *javaServiceClient) parseDepString(dep, localRepoPath string) (provider.
 	// Split string on ":" must have 5 parts.
 	// For now we ignore Type as it appears most everything is a jar
 	parts := strings.Split(dep, ":")
-	if len(parts) != 5 {
+	if len(parts) >= 3 {
+		// Its always <groupId>:<artifactId>:<Packaging>: ... then
+		if len(parts) == 6 {
+			d.Classifier = parts[3]
+			d.Version = parts[4]
+			d.Type = parts[5]
+		} else if len(parts) == 5 {
+			d.Version = parts[3]
+			d.Type = parts[4]
+		} else {
+			p.log.Info("Cannot derive version from dependency string", "dependency", dep)
+			d.Version = "Unknown"
+		}
+	} else {
 		return d, fmt.Errorf("unable to split dependency string %s", dep)
 	}
 	d.Name = fmt.Sprintf("%s.%s", parts[0], parts[1])
-	d.Version = parts[3]
-	d.Type = parts[4]
 
-	fp := filepath.Join(localRepoPath, strings.Replace(parts[0], ".", "/", -1), parts[1], d.Version, fmt.Sprintf("%v-%v.jar.sha1", parts[1], d.Version))
+	var fp string
+	if d.Classifier == "" {
+		fp = filepath.Join(localRepoPath, strings.Replace(parts[0], ".", "/", -1), parts[1], d.Version, fmt.Sprintf("%v-%v.jar.sha1", parts[1], d.Version))
+	} else {
+		fp = filepath.Join(localRepoPath, strings.Replace(parts[0], ".", "/", -1), parts[1], d.Version, fmt.Sprintf("%v-%v-%v.jar.sha1", parts[1], d.Version, d.Classifier))
+	}
 	b, err := os.ReadFile(fp)
 	if err != nil {
 		// Log the error and continue with the next dependency.
@@ -343,11 +413,19 @@ func (p *javaServiceClient) parseDepString(dep, localRepoPath string) (provider.
 		// Set some default or empty resolved identifier for the dependency.
 		d.ResolvedIdentifier = ""
 	} else {
-		d.ResolvedIdentifier = string(b)
+		// sometimes sha file contains name of the jar followed by the actual sha
+		sha, _, _ := strings.Cut(string(b), " ")
+		d.ResolvedIdentifier = sha
 	}
 
 	d.Labels = addDepLabels(p.depToLabels, d.Name)
 	d.FileURIPrefix = fmt.Sprintf("file://%v", filepath.Dir(fp))
+
+	d.Extras = map[string]interface{}{
+		groupIdKey:    parts[0],
+		artifactIdKey: parts[1],
+		pomPathKey:    pomPath,
+	}
 
 	return d, nil
 }
@@ -376,10 +454,10 @@ func addDepLabels(depToLabels map[string]*depLabelItem, depName string) []string
 }
 
 // parseMavenDepLines recursively parses output lines from maven dependency tree
-func (p *javaServiceClient) parseMavenDepLines(lines []string, localRepoPath string) ([]provider.DepDAGItem, error) {
+func (p *javaServiceClient) parseMavenDepLines(lines []string, localRepoPath, pomPath string) ([]provider.DepDAGItem, error) {
 	if len(lines) > 0 {
 		baseDepString := lines[0]
-		baseDep, err := p.parseDepString(baseDepString, localRepoPath)
+		baseDep, err := p.parseDepString(baseDepString, localRepoPath, pomPath)
 		if err != nil {
 			return nil, err
 		}
@@ -389,7 +467,7 @@ func (p *javaServiceClient) parseMavenDepLines(lines []string, localRepoPath str
 		idx := 1
 		// indirect deps are separated by 3 or more spaces after the direct dep
 		for idx < len(lines) && strings.Count(lines[idx], " ") > 2 {
-			transitiveDep, err := p.parseDepString(lines[idx], localRepoPath)
+			transitiveDep, err := p.parseDepString(lines[idx], localRepoPath, pomPath)
 			if err != nil {
 				return nil, err
 			}
@@ -397,7 +475,7 @@ func (p *javaServiceClient) parseMavenDepLines(lines []string, localRepoPath str
 			item.AddedDeps = append(item.AddedDeps, provider.DepDAGItem{Dep: transitiveDep})
 			idx += 1
 		}
-		ds, err := p.parseMavenDepLines(lines[idx:], localRepoPath)
+		ds, err := p.parseMavenDepLines(lines[idx:], localRepoPath, pomPath)
 		if err != nil {
 			return nil, err
 		}
