@@ -226,8 +226,8 @@
   effort: 2
   when:
     yaml.k8sResourceMatched:
-        apiVersion: "extensions/v1beta1"
-        kind: "ReplicaSet"
-        deprecatedIn: "v1.9.0"
-        removedIn: "v1.16.0"
+        apiVersion: extensions/v1beta1
+        kind: ReplicaSet
+        deprecatedIn: v1.9.0
+        removedIn: v1.16.0
 
