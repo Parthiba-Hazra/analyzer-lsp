@@ -4,27 +4,115 @@
       description: Check for usage of deprecated Kubernetes API versions
       category: potential
       incidents:
-      - uri: file:///yaml/k8s.yaml
-        message: Deprecated Kubernetes API version 'apps/v1beta1' is used for 'StatefulSet'. Consider using 'apps/v1'.
+      - uri: file:///analyzer-lsp/examples/yaml/k8s.yaml
+        message: Deprecated/removed Kubernetes API version 'extensions/v1beta1' is used for 'Deployment'. Consider using 'apps/v1'.
         lineNumber: 16
         variables:
           apiVersion: extensions/v1beta1
-          deprecatedIn: v1.9.0
-          file: file://examples/yaml/k8s.yaml
+          deprecated-in: v1.9.0
           kind: Deployment
+          removed-in: v1.16.0
           removedIn: v1.16.0
+          replacement-API: apps/v1
       effort: 2
-    k8s-deprecated-api-002:
+    k8s-deprecated-api-014:
       description: Check for usage of deprecated Kubernetes API versions
       category: potential
       incidents:
-      - uri: file:///yaml/k8s.yaml
-        message: Deprecated Kubernetes API version 'apps/v1beta1' is used for 'StatefulSet'. Consider using 'apps/v1'.
+      - uri: file:///analyzer-lsp/examples/yaml/k8s.yaml
+        message: Deprecated/removed Kubernetes API version 'extensions/v1beta1' is used for 'ReplicaSet'. Consider using 'apps/v1'.
         lineNumber: 38
         variables:
           apiVersion: extensions/v1beta1
-          deprecatedIn: v1.9.0
-          file: file://examples/yaml/k8s.yaml
+          deprecated-in: ""
           kind: ReplicaSet
+          removed-in: v1.16.0
           removedIn: v1.16.0
+          replacement-API: apps/v1
       effort: 2
+  errors:
+    k8s-deprecated-api-058: unable to get the kind of k8s yaml to be matched
+  unmatched:
+  - k8s-deprecated-api-002
+  - k8s-deprecated-api-003
+  - k8s-deprecated-api-004
+  - k8s-deprecated-api-005
+  - k8s-deprecated-api-006
+  - k8s-deprecated-api-007
+  - k8s-deprecated-api-008
+  - k8s-deprecated-api-010
+  - k8s-deprecated-api-011
+  - k8s-deprecated-api-012
+  - k8s-deprecated-api-013
+  - k8s-deprecated-api-015
+  - k8s-deprecated-api-016
+  - k8s-deprecated-api-017
+  - k8s-deprecated-api-018
+  - k8s-deprecated-api-019
+  - k8s-deprecated-api-020
+  - k8s-deprecated-api-021
+  - k8s-deprecated-api-022
+  - k8s-deprecated-api-023
+  - k8s-deprecated-api-024
+  - k8s-deprecated-api-025
+  - k8s-deprecated-api-026
+  - k8s-deprecated-api-027
+  - k8s-deprecated-api-028
+  - k8s-deprecated-api-029
+  - k8s-deprecated-api-030
+  - k8s-deprecated-api-031
+  - k8s-deprecated-api-032
+  - k8s-deprecated-api-033
+  - k8s-deprecated-api-034
+  - k8s-deprecated-api-035
+  - k8s-deprecated-api-036
+  - k8s-deprecated-api-037
+  - k8s-deprecated-api-038
+  - k8s-deprecated-api-039
+  - k8s-deprecated-api-040
+  - k8s-deprecated-api-041
+  - k8s-deprecated-api-042
+  - k8s-deprecated-api-043
+  - k8s-deprecated-api-044
+  - k8s-deprecated-api-045
+  - k8s-deprecated-api-046
+  - k8s-deprecated-api-047
+  - k8s-deprecated-api-048
+  - k8s-deprecated-api-049
+  - k8s-deprecated-api-050
+  - k8s-deprecated-api-051
+  - k8s-deprecated-api-052
+  - k8s-deprecated-api-053
+  - k8s-deprecated-api-054
+  - k8s-deprecated-api-055
+  - k8s-deprecated-api-056
+  - k8s-deprecated-api-057
+  - k8s-deprecated-api-059
+  - k8s-deprecated-api-060
+  - k8s-deprecated-api-061
+  - k8s-deprecated-api-062
+  - k8s-deprecated-api-063
+  - k8s-deprecated-api-064
+  - k8s-deprecated-api-065
+  - k8s-deprecated-api-066
+  - k8s-deprecated-api-067
+  - k8s-deprecated-api-068
+  - k8s-deprecated-api-069
+  - k8s-deprecated-api-070
+  - k8s-deprecated-api-071
+  - k8s-deprecated-api-072
+  - k8s-deprecated-api-073
+  - k8s-deprecated-api-074
+  - k8s-deprecated-api-075
+  - k8s-deprecated-api-076
+  - k8s-deprecated-api-077
+  - k8s-deprecated-api-078
+  - k8s-deprecated-api-079
+  - k8s-deprecated-api-080
+  - k8s-deprecated-api-081
+  - k8s-deprecated-api-082
+  - k8s-deprecated-api-083
+  - k8s-deprecated-api-084
+  - k8s-deprecated-api-085
+  - k8s-deprecated-api-086
+  - k8s-deprecated-api-09
