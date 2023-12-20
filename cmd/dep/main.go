@@ -54,7 +54,7 @@ func main() {
 
 	var labelSelector *labels.LabelSelector[*konveyor.Dep]
 	if depLabelSelector != "" {
-		labelSelector, err = labels.NewLabelSelector[*konveyor.Dep](depLabelSelector)
+		labelSelector, err = labels.NewLabelSelector[*konveyor.Dep](depLabelSelector, nil)
 		if err != nil {
 			log.Error(err, "invalid label selector")
 			os.Exit(1)
@@ -103,7 +103,7 @@ func main() {
 		}
 
 		if treeOutput {
-			deps, err := prov.GetDependenciesDAG()
+			deps, err := prov.GetDependenciesDAG(ctx)
 			if err != nil {
 				log.Error(err, "failed to get list of dependencies for provider", "provider", name)
 				continue
@@ -116,7 +116,7 @@ func main() {
 				})
 			}
 		} else {
-			deps, err := prov.GetDependencies()
+			deps, err := prov.GetDependencies(ctx)
 			if err != nil {
 				log.Error(err, "failed to get list of dependencies for provider", "provider", name)
 				continue

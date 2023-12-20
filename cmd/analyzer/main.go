@@ -31,6 +31,7 @@ var (
 	errorOnViolations bool
 	labelSelector     string
 	depLabelSelector  string
+	incidentSelector  string
 	logLevel          int
 	enableJaeger      bool
 	jaegerEndpoint    string
@@ -54,6 +55,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&errorOnViolations, "error-on-violation", false, "exit with 3 if any violation are found will also print violations to console")
 	rootCmd.Flags().StringVar(&labelSelector, "label-selector", "", "an expression to select rules based on labels")
 	rootCmd.Flags().StringVar(&depLabelSelector, "dep-label-selector", "", "an expression to select dependencies based on labels. This will filter out the violations from these dependencies as well these dependencies when matching dependency conditions")
+	rootCmd.Flags().StringVar(&incidentSelector, "incident-selector", "", "an expression to select incidents based on custom variables. ex: (!package=io.konveyor.demo.config-utils)")
 	rootCmd.Flags().IntVar(&logLevel, "verbose", 9, "level for logging output")
 	rootCmd.Flags().BoolVar(&enableJaeger, "enable-jaeger", false, "enable tracer exports to jaeger endpoint")
 	rootCmd.Flags().StringVar(&jaegerEndpoint, "jaeger-endpoint", "http://localhost:14268/api/traces", "jaeger endpoint to collect tracing data")
@@ -93,7 +95,7 @@ func main() {
 
 	selectors := []engine.RuleSelector{}
 	if labelSelector != "" {
-		selector, err := labels.NewLabelSelector[*engine.RuleMeta](labelSelector)
+		selector, err := labels.NewLabelSelector[*engine.RuleMeta](labelSelector, nil)
 		if err != nil {
 			log.Error(err, "failed to create label selector from expression", "selector", labelSelector)
 			os.Exit(1)
@@ -103,7 +105,7 @@ func main() {
 
 	var dependencyLabelSelector *labels.LabelSelector[*konveyor.Dep]
 	if depLabelSelector != "" {
-		dependencyLabelSelector, err = labels.NewLabelSelector[*konveyor.Dep](depLabelSelector)
+		dependencyLabelSelector, err = labels.NewLabelSelector[*konveyor.Dep](depLabelSelector, nil)
 		if err != nil {
 			log.Error(err, "failed to create label selector from expression", "selector", labelSelector)
 			os.Exit(1)
@@ -139,6 +141,7 @@ func main() {
 		engine.WithIncidentLimit(limitIncidents),
 		engine.WithCodeSnipLimit(limitCodeSnips),
 		engine.WithContextLines(contextLines),
+		engine.WithIncidentSelector(incidentSelector),
 	)
 
 	providers := map[string]provider.InternalProviderClient{}
@@ -213,7 +216,11 @@ func main() {
 		os.Exit(EXIT_ON_ERROR_CODE)
 	}
 
-	os.WriteFile(outputViolations, b, 0644)
+	err = os.WriteFile(outputViolations, b, 0644)
+	if err != nil {
+		log.Error(err, "error writing output file", "file", outputViolations)
+		os.Exit(1) // Treat the error as a fatal error
+	}
 }
 
 func validateFlags() error {

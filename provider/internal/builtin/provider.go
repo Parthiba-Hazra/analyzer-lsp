@@ -41,6 +41,10 @@ var capabilities = []provider.Capability{
 		TemplateContext: openapi3.SchemaRef{},
 	},
 	{
+		Name:            "xmlPublicID",
+		TemplateContext: openapi3.SchemaRef{},
+	},
+	{
 		Name:            "json",
 		TemplateContext: openapi3.SchemaRef{},
 	},
@@ -54,6 +58,7 @@ type builtinCondition struct {
 	Filecontent              fileContentCondition `yaml:"filecontent"`
 	File                     fileCondition        `yaml:"file"`
 	XML                      xmlCondition         `yaml:"xml"`
+	XMLPublicID              xmlPublicIDCondition `yaml:"xmlPublicID"`
 	JSON                     jsonCondition        `yaml:"json"`
 	HasTags                  []string             `yaml:"hasTags"`
 	provider.ProviderContext `yaml:",inline"`
@@ -72,6 +77,12 @@ var _ provider.InternalProviderClient = &builtinProvider{}
 
 type xmlCondition struct {
 	XPath      string            `yaml:"xpath"`
+	Namespaces map[string]string `yaml:"namespaces"`
+	Filepaths  []string          `yaml:"filepaths"`
+}
+
+type xmlPublicIDCondition struct {
+	Regex      string            `yaml:"regex"`
 	Namespaces map[string]string `yaml:"namespaces"`
 	Filepaths  []string          `yaml:"filepaths"`
 }
@@ -103,14 +114,14 @@ func (p *builtinProvider) Capabilities() []provider.Capability {
 	return capabilities
 }
 
-func (p *builtinProvider) ProviderInit(context.Context) error {
+func (p *builtinProvider) ProviderInit(ctx context.Context) error {
 	// First load all the tags for all init configs.
 	for _, c := range p.config.InitConfig {
 		p.loadTags(c)
 	}
 
 	for _, c := range p.config.InitConfig {
-		client, err := p.Init(p.ctx, p.log, c)
+		client, err := p.Init(ctx, p.log, c)
 		if err != nil {
 			return nil
 		}
@@ -124,10 +135,12 @@ func (p *builtinProvider) Init(ctx context.Context, log logr.Logger, config prov
 	if config.AnalysisMode != provider.AnalysisMode("") {
 		p.log.V(5).Info("skipping analysis mode setting for builtin")
 	}
-	return &builtintServiceClient{
+	return &builtinServiceClient{
 		config:                             config,
 		tags:                               p.tags,
 		UnimplementedDependenciesComponent: provider.UnimplementedDependenciesComponent{},
+		locationCache:                      make(map[string]float64),
+		log:                                log,
 	}, nil
 }
 
@@ -157,8 +170,8 @@ func (p *builtinProvider) loadTags(config provider.InitConfig) error {
 	return nil
 }
 
-func (p *builtinProvider) Evaluate(cap string, conditionInfo []byte) (provider.ProviderEvaluateResponse, error) {
-	return provider.FullResponseFromServiceClients(p.clients, cap, conditionInfo)
+func (p *builtinProvider) Evaluate(ctx context.Context, cap string, conditionInfo []byte) (provider.ProviderEvaluateResponse, error) {
+	return provider.FullResponseFromServiceClients(ctx, p.clients, cap, conditionInfo)
 }
 
 func (p *builtinProvider) Stop() {

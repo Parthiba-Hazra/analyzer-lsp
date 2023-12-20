@@ -173,6 +173,11 @@
     builtin.xml:
       xpath:
         invalid-query: "test"
+- message: "JBoss 5.x EAR descriptor (jboss-app.xml) was found with public-id"
+  ruleID: jboss-eap5-7-xml-02000
+  when:
+    builtin.xmlPublicID:
+      regex: .*JBoss.+DTD Java EE.+5.*
 - message: "Tags {{tags}} found, creating message and new tag both"
   ruleID: multiple-actions-001
   tag:
@@ -186,3 +191,19 @@
     builtin.filecontent:
       pattern: "^FROM.*openjdk-11.*"
       filePattern: "Dockerfile"
+
+- message: python sample rule 001
+  ruleID: python-sample-rule-001
+  when:
+    python.referenced: 
+      pattern: "hello_world"
+- message: python sample rule 002
+  ruleID: python-sample-rule-002
+  when:
+    python.referenced: 
+      pattern: "speak"
+- message: python sample rule 003
+  ruleID: python-sample-rule-003
+  when:
+    python.referenced: 
+      pattern: "create_custom_resource_definition"
